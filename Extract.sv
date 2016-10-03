@@ -12,7 +12,7 @@ module Extract #(
     parameter IN_WIDTH = 64,
     parameter IN_EMPTY_WIDTH = $clog2(IN_WIDTH / 8),
     parameter OUT_WIDTH = 256,
-    parameter OUT_MASK_WIDTH = OUTPUT_WIDTH / 8
+    parameter OUT_MASK_WIDTH = OUT_WIDTH / 8
 )
 (
 
@@ -41,7 +41,8 @@ module Extract #(
     localparam OUT_BYTES = OUT_WIDTH / BYTE_WIDTH;
 
 
-    logic ExtractState state;
+    ExtractState state;
+    ExtractState next_state;
     logic [BYTE_WIDTH-1:0] in_data_bytes [IN_BYTES-1:0];
     //Two sets of data buffers: current and next message
     logic [BYTE_WIDTH-1:0] outDataReg [OUT_BYTES-1:0][1:0]; 
@@ -65,16 +66,10 @@ module Extract #(
 
 
     always @ (posedge clk) begin
-        if (!reset_n) begin
-            outDataReg[0] <= 0;
-            outDataReg[1] <= 0;
-        end
-        else begin
-            if (in_valid) begin
-                if (msg_shift > 0) begin
-                    outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
-                    outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
-                end
+       if (in_valid) begin
+           if (msg_shift > 0) begin
+                outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
+                outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
             end
         end
     end
@@ -98,7 +93,7 @@ module Extract #(
         next_msg_shift = msg_shift;
 
         
-        case (state) begin
+        case (state)
             IDLE: begin
                 if (in_valid && in_startofpacket) begin
                     //Top 2 bytes are message count, always < 256, we can just use the lower byte
