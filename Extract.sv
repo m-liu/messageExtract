@@ -58,7 +58,8 @@ module Extract #(
     logic write_both_regs;
     logic [$clog2(OUT_BYTES):0] shift[1:0];
     logic next_out_valid; 
-    logic test;
+    logic [OUT_MASK_WIDTH-1:0] next_byte_mask;
+    logic [OUT_MASK_WIDTH-1:0] next_byte_mask_delayed;
 
 
     //convert input to bytes
@@ -72,12 +73,6 @@ module Extract #(
 
     integer j;
     always @ (posedge clk) begin
-        if (in_valid) begin
-            test <= 1;
-        end 
-        else begin
-            test <= 0;
-        end
         if (in_valid) begin
 
             if (out_reg_sel==0 || write_both_regs) begin
@@ -141,6 +136,7 @@ module Extract #(
         next_out_reg_sel = out_reg_sel; 
         write_both_regs = 0;
         next_out_valid = 0;
+        next_byte_mask = next_byte_mask_delayed;
         
         case (state)
             IDLE: begin
@@ -148,6 +144,8 @@ module Extract #(
                     //Top 2 bytes are message count, always < 256, we can just use the lower byte
                     next_msg_cnt = in_data_bytes[6] - 1; //msg count - current msg
                     next_msg_rem = in_data_bytes[4] - 4; //length - 4 bytes we took
+                    //directly convert length to bytemask
+                    next_byte_mask = (1 << in_data_bytes[4]) - 1;
 
                     if (next_msg_rem > 8) begin
                         next_msg_shift = 8;
@@ -192,6 +190,7 @@ module Extract #(
                     end
                     else begin
                         next_msg_rem = in_data_bytes[6 - msg_rem];
+                        next_byte_mask = (1 << next_msg_rem) - 1;
                         if (msg_rem < 5) begin
                             write_both_regs = 1;
                             //we took some bytes for the next msg
@@ -214,10 +213,12 @@ module Extract #(
                 if (in_valid) begin
                     if (msg_rem==7) begin
                         next_msg_rem = in_data_bytes[7];
+                        next_byte_mask = (1 << next_msg_rem) - 1;
                         next_msg_rem = next_msg_rem - 7; //take the rest of the 7 bytes
                     end
                     else begin
                         next_msg_rem = in_data_bytes[6];
+                        next_byte_mask = (1 << next_msg_rem) - 1;
                         next_msg_rem = next_msg_rem - 6; //take the rest of the 6 bytes
                     end
 
@@ -243,6 +244,8 @@ module Extract #(
             msg_shift <= 8; //TODO FIXME: use a new state?
             out_reg_sel <= 0;
             out_valid <= 0;
+            next_byte_mask_delayed <= 0; //have to delay by 1 cyc
+            out_bytemask <= 0;
         end
         else begin
             state <= next_state;
@@ -251,6 +254,8 @@ module Extract #(
             msg_shift <= next_msg_shift;
             out_reg_sel <= next_out_reg_sel;
             out_valid <= next_out_valid;
+            next_byte_mask_delayed <= next_byte_mask;
+            out_bytemask <= next_byte_mask_delayed;
         end
     end
 
@@ -266,82 +271,3 @@ module Extract #(
 
 endmodule
     
-
-
-
-    /*
-
-    always @ (posedge clk) begin
-        if (!reset_n) begin
-        end
-        else begin
-            if (in_valid) begin
-                if (in_startofpacket && state == IDLE) begin
-                    msg_cnt_remaining <= in_data[IN_DATA_WIDTH-1 -: 16] - 1; //Take top 2 bytes 
-                    msg_next_offset <= in_data[IN_DATA_WIDTH-1-16 -: 16 ] - 4; //Take next 2 bytes, subtract by 4 for the 4 input bytes we have in this payload
-                    outDataReg[ in_data[3:0] -: 4*8 ][reg_sel] <= in_data[IN_DATA_WIDTH-1-32 : 0]; //take next 4 bytes as output. Careful of offset in outDataReg
-                    state <= MSG_BEGIN;
-                end
-                else if (state==MSG_BEGIN) begin
-                    if (msg_next_offset < 8 ) begin //last IN payload
-                        outDataReg[][] <= in_data[]; 
-                        //set the next offset if we can
-                        if (msg_next_offset > ?) begin
-                            
-                        end
-                        //set the next message output reg if we can
-
-                    end
-                    else begin
-                        outDataReg[][] <= in_data[]; 
-                        msg_next_offset <= msg_next_offset - 8;
-                    end
-                end
-
-            end
-        end
-    end
-
-
-
-
-
-    function [BYTE_WIDTH-1][OUT_BYTES-1:0] shiftAndLoad(
-        input [BYTE_WIDTH-1:0] dataReg [OUT_BYTES-1:0],
-        input [BYTE_WIDTH-1:0] in_bytes [IN_BYTES-1:0],
-        input [$clog2(OUT_BYTES)-1:0] shift 
-    );
-
-        if (shift > 0) begin
-            dataReg[shift-1:0] = in_bytes[IN_BYTES-1 -: shift];
-            dataReg[OUT_BYTES-1:shift] = dataReg[
-
-    endfunction
-
-
-
-                //    outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
-                //    outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
-                //end
-                //else begin
-                //end
-            case (msg_shift)
-                1: begin
-                    outDataReg[0][0:0] <= in_data_bytes[IN_BYTES-1 -: 1];
-                    outDataReg[0][OUT_BYTES-1 : 1] <= outDataReg[0 +: OUT_BYTES-1];
-                end
-                default begin
-                    outDataReg[0] <= outDataReg[0];
-                end
-
-            if (msg_shift > 0) begin
-
-                outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
-                outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
-            end
-                
-            endcase
-
-
-
-    */
