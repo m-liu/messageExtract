@@ -26,12 +26,12 @@ module Extract #(
     input in_endofpacket,
     input [IN_WIDTH-1:0] in_data,
     input [IN_EMPTY_WIDTH-1:0] in_empty,
-    output in_ready,
+    output logic in_ready,
 
     //Message output interface
-    output out_valid,
-    output [OUT_WIDTH-1:0] out_data,
-    output [OUT_MASK_WIDTH-1:0] out_bytemask
+    output logic out_valid,
+    output logic [OUT_WIDTH-1:0] out_data,
+    output logic [OUT_MASK_WIDTH-1:0] out_bytemask
 
 
 );
@@ -45,7 +45,7 @@ module Extract #(
     ExtractState next_state;
     logic [BYTE_WIDTH-1:0] in_data_bytes [IN_BYTES-1:0];
     //Two sets of data buffers: current and next message
-    logic [BYTE_WIDTH-1:0] outDataReg [OUT_BYTES-1:0][1:0]; 
+    logic [BYTE_WIDTH-1:0] outDataReg [1:0][OUT_BYTES-1:0]; 
 
     logic [BYTE_WIDTH-1:0] msg_cnt;
     logic [BYTE_WIDTH-1:0] next_msg_cnt;
@@ -53,24 +53,71 @@ module Extract #(
     logic [$clog2(OUT_BYTES):0] next_msg_shift;
     logic [BYTE_WIDTH-1:0] msg_rem; 
     logic [BYTE_WIDTH-1:0] next_msg_rem; 
+    logic out_reg_sel; 
+    logic next_out_reg_sel; 
+    logic write_both_regs;
+    logic [$clog2(OUT_BYTES):0] shift[1:0];
+    logic next_out_valid; 
+    logic test;
 
 
     //convert input to bytes
     genvar i;
     generate
-        for (i = 0; i < IN_BYTES; i++) begin: MakeWords
+        for (i = 0; i < IN_BYTES; i++) begin: MakeOutWords
             assign in_data_bytes[i] = in_data[BYTE_WIDTH*i +: BYTE_WIDTH];
         end
     endgenerate
         
 
-
+    integer j;
     always @ (posedge clk) begin
-       if (in_valid) begin
-           if (msg_shift > 0) begin
-                outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
-                outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
+        if (in_valid) begin
+            test <= 1;
+        end 
+        else begin
+            test <= 0;
+        end
+        if (in_valid) begin
+
+            if (out_reg_sel==0 || write_both_regs) begin
+                //TODO: this is kind of ugly
+                if (out_reg_sel == 1 && write_both_regs) begin
+                    shift[0] = 8;
+                end
+                else begin
+                    shift[0] = msg_shift;
+                end
+
+                for (j=0; j<OUT_BYTES; j++) begin
+                    if (j < shift[0]) begin
+                        outDataReg[0][j] <= in_data_bytes[IN_BYTES - shift[0] + j];
+                    end
+                    else begin
+                        outDataReg[0][j] <= outDataReg[0][j-shift[0]];
+                    end
+                end
             end
+
+            if (out_reg_sel==1 || write_both_regs) begin
+                //TODO: this is kind of ugly
+                if (out_reg_sel == 0 && write_both_regs) begin
+                    shift[1] = 8;
+                end
+                else begin
+                    shift[1] = msg_shift;
+                end
+
+                for (j=0; j<OUT_BYTES; j++) begin
+                    if (j < shift[1]) begin
+                        outDataReg[1][j] <= in_data_bytes[IN_BYTES - shift[1] + j];
+                    end
+                    else begin
+                        outDataReg[1][j] <= outDataReg[1][j-shift[1]];
+                    end
+                end
+            end
+
         end
     end
 
@@ -91,7 +138,9 @@ module Extract #(
         next_msg_cnt = msg_cnt;
         next_msg_rem = msg_rem;
         next_msg_shift = msg_shift;
-
+        next_out_reg_sel = out_reg_sel; 
+        write_both_regs = 0;
+        next_out_valid = 0;
         
         case (state)
             IDLE: begin
@@ -127,9 +176,12 @@ module Extract #(
 
             MSG_END: begin
                 if (in_valid) begin
+                    next_msg_cnt = msg_cnt - 1;
+                    next_out_reg_sel = ~ out_reg_sel; //switch output reg 
+                    next_out_valid = 1;
                     if (msg_cnt == 0) begin //finished packet
                         next_state = IDLE;
-                        next_msg_shift = 0;
+                        next_msg_shift = 8; //TODO FIXME
                         next_msg_rem = 0;
                     end
                     //special case for msg_rem == 8 and msg_rem==7
@@ -141,22 +193,20 @@ module Extract #(
                     else begin
                         next_msg_rem = in_data_bytes[6 - msg_rem];
                         if (msg_rem < 5) begin
+                            write_both_regs = 1;
                             //we took some bytes for the next msg
                             next_msg_rem = next_msg_rem - (8 - 2 - msg_rem);
-                            if (next_msg_rem > 8) begin
-                                next_msg_shift = 8;
-                                next_state = MSG_PROC;
-                            end
-                            else begin
-                                next_msg_shift = next_msg_rem;
-                                next_state = MSG_END;
-                            end
+                        end
+
+                        if (next_msg_rem > 8) begin
+                            next_msg_shift = 8;
+                            next_state = MSG_PROC;
+                        end
+                        else begin
+                            next_msg_shift = next_msg_rem;
+                            next_state = MSG_END;
                         end
                     end
-                        //just store it. doesn't matter if it's invalid
-                        //if (msg_rem < 5) // we have more data that needs to be stored for the NEXT msg
-                            //next_msg_shift = 
-                        
                 end
             end
 
@@ -190,15 +240,29 @@ module Extract #(
             state <= IDLE;
             msg_cnt <= 0;
             msg_rem <= 0;
-            msg_shift <= 0;
+            msg_shift <= 8; //TODO FIXME: use a new state?
+            out_reg_sel <= 0;
+            out_valid <= 0;
         end
         else begin
             state <= next_state;
             msg_cnt <= next_msg_cnt;
             msg_rem <= next_msg_rem; //how many bytes are remaining in the message
             msg_shift <= next_msg_shift;
+            out_reg_sel <= next_out_reg_sel;
+            out_valid <= next_out_valid;
         end
     end
+
+    generate
+        for (i = 0; i < OUT_BYTES; i++) begin: MakeWords
+            assign out_data[BYTE_WIDTH*i +: BYTE_WIDTH] = out_reg_sel ? outDataReg[0][i] : outDataReg[1][i];
+        end
+    endgenerate
+    //assign out_data = out_reg_sel ? outDataReg[0] : outDataReg[1];
+    
+    //This module is always ready
+    assign in_ready = 1'b1;
 
 endmodule
     
@@ -253,5 +317,31 @@ endmodule
             dataReg[OUT_BYTES-1:shift] = dataReg[
 
     endfunction
+
+
+
+                //    outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
+                //    outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
+                //end
+                //else begin
+                //end
+            case (msg_shift)
+                1: begin
+                    outDataReg[0][0:0] <= in_data_bytes[IN_BYTES-1 -: 1];
+                    outDataReg[0][OUT_BYTES-1 : 1] <= outDataReg[0 +: OUT_BYTES-1];
+                end
+                default begin
+                    outDataReg[0] <= outDataReg[0];
+                end
+
+            if (msg_shift > 0) begin
+
+                outDataReg[0][msg_shift-1:0] <= in_data_bytes[IN_BYTES-1 -: msg_shift];
+                outDataReg[0][OUT_BYTES-1:msg_shift] <= dataReg[0 +: OUT_BYTES-msg_shift];
+            end
+                
+            endcase
+
+
 
     */
